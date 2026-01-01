@@ -1,72 +1,113 @@
 package com.snakesladders;
 
-import net.runelite.client.ui.overlay.infobox.InfoBox;
-
 import java.awt.image.BufferedImage;
 
 /**
- * RuneLite-native InfoBox (buff/timer style).
- * Icon = tile image (later we’ll swap from placeholder to real image).
- * Text = countdown (mm:ss or h:mm:ss).
- * Tooltip = tile title + description + status.
+ * Simple mutable model for UI/InfoBox display.
+ * (We’ll likely delete this later once the InfoBox is fully driven by /overlay.)
  */
-public class SnakesTileInfoBox extends InfoBox
+public final class OverlayModel
 {
-	private volatile String text = "";
-	private volatile String status = "Snakes & Ladders";
-	private volatile String tooltip = "Snakes & Ladders";
+	private String clanName = "";
+	private String teamName = "";
+	private String statusLine = "";
+	private String countdownLine = "";
+	private String tileLine = "";
+	private String tileTitle = "";
+	private String tileDescription = "";
+	private BufferedImage tileImage = null;
 
-	public SnakesTileInfoBox(BufferedImage image)
+	/* -------------------- getters -------------------- */
+
+	public synchronized String getClanName()
 	{
-		// Pass null plugin because we aren't using plugin hub auto-grouping here
-		// (This is acceptable; if you want strict grouping we can pass plugin instance later)
-		super(image, null);
+		return clanName;
 	}
 
-	@Override
-	public String getText()
+	public synchronized String getTeamName()
 	{
-		return text;
+		return teamName;
 	}
 
-	@Override
-	public String getTooltip()
+	public synchronized String getStatusLine()
 	{
-		return tooltip;
+		return statusLine;
 	}
 
-	public void setText(String text)
+	public synchronized String getCountdownLine()
 	{
-		this.text = text == null ? "" : text;
+		return countdownLine;
 	}
 
-	public void setStatus(String status)
+	public synchronized String getTileLine()
 	{
-		this.status = status == null ? "" : status;
-		// keep tooltip first line as status unless overridden
+		return tileLine;
 	}
 
-	public void setTooltipLines(String... lines)
+	public synchronized String getTileTitle()
 	{
-		if (lines == null || lines.length == 0)
-		{
-			this.tooltip = "Snakes & Ladders";
-			return;
-		}
+		return tileTitle;
+	}
 
-		StringBuilder sb = new StringBuilder();
-		boolean first = true;
-		for (String line : lines)
-		{
-			if (line == null) continue;
-			String s = line.trim();
-			if (s.isEmpty()) continue;
+	public synchronized String getTileDescription()
+	{
+		return tileDescription;
+	}
 
-			if (!first) sb.append("\n");
-			sb.append(s);
-			first = false;
-		}
+	public synchronized BufferedImage getTileImage()
+	{
+		return tileImage;
+	}
 
-		this.tooltip = sb.length() == 0 ? "Snakes & Ladders" : sb.toString();
+	/* -------------------- setters -------------------- */
+
+	public synchronized void setClanName(String clanName)
+	{
+		this.clanName = clanName == null ? "" : clanName;
+	}
+
+	public synchronized void setTeamName(String teamName)
+	{
+		this.teamName = teamName == null ? "" : teamName;
+	}
+
+	public synchronized void setStatusLine(String statusLine)
+	{
+		this.statusLine = statusLine == null ? "" : statusLine;
+	}
+
+	public synchronized void setCountdownLine(String countdownLine)
+	{
+		this.countdownLine = countdownLine == null ? "" : countdownLine;
+	}
+
+	public synchronized void setTileLine(String tileLine)
+	{
+		this.tileLine = tileLine == null ? "" : tileLine;
+	}
+
+	public synchronized void setTileTitle(String tileTitle)
+	{
+		this.tileTitle = tileTitle == null ? "" : tileTitle;
+	}
+
+	public synchronized void setTileDescription(String tileDescription)
+	{
+		this.tileDescription = tileDescription == null ? "" : tileDescription;
+	}
+
+	public synchronized void setTileImage(BufferedImage tileImage)
+	{
+		this.tileImage = tileImage;
+	}
+
+	/* -------------------- helpers -------------------- */
+
+	public synchronized void clearTile()
+	{
+		tileLine = "";
+		tileTitle = "";
+		tileDescription = "";
+		tileImage = null;
 	}
 }
