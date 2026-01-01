@@ -6,9 +6,9 @@ import java.awt.image.BufferedImage;
 
 /**
  * RuneLite-native InfoBox (buff/timer style).
- * Icon = tile image (later we’ll swap from placeholder to real image).
+ * Icon = tile image (later pulled from wiki/board).
  * Text = countdown (mm:ss or h:mm:ss).
- * Tooltip = tile title + description + status.
+ * Tooltip = status + tile title/description.
  */
 public class SnakesTileInfoBox extends InfoBox
 {
@@ -18,8 +18,6 @@ public class SnakesTileInfoBox extends InfoBox
 
 	public SnakesTileInfoBox(BufferedImage image)
 	{
-		// Pass null plugin because we aren't using plugin hub auto-grouping here
-		// (This is acceptable; if you want strict grouping we can pass plugin instance later)
 		super(image, null);
 	}
 
@@ -42,31 +40,37 @@ public class SnakesTileInfoBox extends InfoBox
 
 	public void setStatus(String status)
 	{
-		this.status = status == null ? "" : status;
-		// keep tooltip first line as status unless overridden
+		this.status = (status == null || status.trim().isEmpty()) ? "Snakes & Ladders" : status.trim();
+		// If caller hasn't set a multi-line tooltip, keep a sane default
+		this.tooltip = this.status;
 	}
 
 	public void setTooltipLines(String... lines)
 	{
 		if (lines == null || lines.length == 0)
 		{
-			this.tooltip = "Snakes & Ladders";
+			this.tooltip = status;
 			return;
 		}
 
 		StringBuilder sb = new StringBuilder();
-		boolean first = true;
+		sb.append(status);
+
 		for (String line : lines)
 		{
 			if (line == null) continue;
 			String s = line.trim();
 			if (s.isEmpty()) continue;
 
-			if (!first) sb.append("\n");
-			sb.append(s);
-			first = false;
+			sb.append("\n").append(s);
 		}
 
-		this.tooltip = sb.length() == 0 ? "Snakes & Ladders" : sb.toString();
+		this.tooltip = sb.toString();
+	}
+
+	public void setIcon(BufferedImage image)
+	{
+		if (image == null) return;
+		setImage(image);
 	}
 }
