@@ -6,18 +6,16 @@ import java.awt.image.BufferedImage;
  * Shared state model for the RuneLite overlay (canvas-style toolbox).
  * This is intentionally simple and mutable.
  */
-public class OverlayModel
+public final class OverlayState
 {
-    private String clanName = "Snakes & Ladders";
-    private String teamName = "-";
-
-    private String statusLine = "Not in game";
-    private String countdownLine = "";   // e.g. "Starts in 3d 7h"
-    private String tileLine = "";        // e.g. "Tile 6"
-    private String tileTitle = "";
-    private String tileDescription = "";
-
-    private BufferedImage tileImage;
+    private final long revision;
+    private final Instant serverTime;
+    private final Instant startTime;
+    private final Instant endTime;
+    private final Phase phase;
+    private final Tile tile;
+    private final boolean awaitingProof;
+    private final boolean canRoll;
 
     /* -------------------- getters -------------------- */
 
