@@ -4,7 +4,6 @@ import net.runelite.client.ui.PluginPanel;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 
 public class SnakesLaddersPanel extends PluginPanel
@@ -17,36 +16,15 @@ public class SnakesLaddersPanel extends PluginPanel
 	private final JLabel tileLabel = new JLabel("-");
 	private final JLabel awaitingLabel = new JLabel("-");
 
-	// Tile/task info
-	private final JTextArea tileInfoArea = new JTextArea();
+	// Main buttons (new flow)
+	public final JButton connectButton = new JButton("Connect (Set Game ID)");
+	public final JButton disconnectButton = new JButton("Disconnect");
+	public final JButton actionButton = new JButton("…"); // Roll or Submit Proof
 
-	// Lobby buttons
-	public final JButton newGameButton = new JButton("New Game (Admin)");
-	public final JButton joinGameButton = new JButton("Join Game");
-
-	// In-game buttons
-	public final JButton teamButton = new JButton("Create / Join Team");
-	public final JButton leaveGameButton = new JButton("Leave Game");
-	public final JButton rollButton = new JButton("Roll Dice");
-	public final JButton proofButton = new JButton("Submit Proof");
-	public final JButton refreshButton = new JButton("Refresh");
-
-	// Standings table
-	private final DefaultTableModel standingsModel = new DefaultTableModel(
-		new Object[]{"Team", "Tile", "Task"}, 0
-	)
-	{
-		@Override
-		public boolean isCellEditable(int row, int column)
-		{
-			return false;
-		}
-	};
-	private final JTable standingsTable = new JTable(standingsModel);
-
-	private boolean inGame = false;
-	private boolean hasTeam = false;
+	// State flags controlled by plugin
+	private boolean connected = false;
 	private boolean awaitingProof = false;
+	private boolean canRoll = false;
 
 	public SnakesLaddersPanel()
 	{
@@ -57,28 +35,17 @@ public class SnakesLaddersPanel extends PluginPanel
 		top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
 		top.add(buildHeader());
 		top.add(Box.createVerticalStrut(8));
-		top.add(buildTileInfo());
+		top.add(buildHint());
 
 		add(top, BorderLayout.NORTH);
-		add(buildStandings(), BorderLayout.CENTER);
 		add(buildActions(), BorderLayout.SOUTH);
 
-		// Defaults
-		tileInfoArea.setLineWrap(true);
-		tileInfoArea.setWrapStyleWord(true);
-		tileInfoArea.setEditable(false);
-		tileInfoArea.setRows(5);
-
-		standingsTable.setFillsViewportHeight(true);
-		standingsTable.setRowSelectionAllowed(false);
-		standingsTable.setCellSelectionEnabled(false);
-
-		setTileInfo("UI ready.");
-		setStatus("Not in game");
+		setStatus("Not connected");
 		setTile(0);
 		setAwaitingProof(false);
+		setConnected(false);
+		setCanRoll(false);
 		setTeam("-");
-		setInGame(false);
 	}
 
 	private JPanel buildHeader()
@@ -96,24 +63,19 @@ public class SnakesLaddersPanel extends PluginPanel
 		return p;
 	}
 
-	private JPanel buildTileInfo()
+	private JComponent buildHint()
 	{
-		JPanel p = new JPanel(new BorderLayout());
-		p.setBorder(BorderFactory.createTitledBorder("Current tile / task"));
-		p.add(new JScrollPane(tileInfoArea), BorderLayout.CENTER);
-		return p;
-	}
-
-	private JPanel buildStandings()
-	{
-		JPanel p = new JPanel(new BorderLayout());
-		p.setBorder(BorderFactory.createTitledBorder("Standings"));
-
-		JScrollPane sp = new JScrollPane(standingsTable);
-		sp.setBorder(BorderFactory.createEmptyBorder());
-		p.add(sp, BorderLayout.CENTER);
-
-		return p;
+		JTextArea hint = new JTextArea(
+			"Use the website to create/join teams.\n" +
+			"RuneLite only needs the Game ID.\n\n" +
+			"Tile details + countdown are shown in the buff/timer InfoBox."
+		);
+		hint.setEditable(false);
+		hint.setLineWrap(true);
+		hint.setWrapStyleWord(true);
+		hint.setOpaque(false);
+		hint.setBorder(BorderFactory.createTitledBorder("How this works"));
+		return hint;
 	}
 
 	private JPanel buildActions()
@@ -121,18 +83,9 @@ public class SnakesLaddersPanel extends PluginPanel
 		JPanel p = new JPanel(new GridLayout(0, 1, 0, 6));
 		p.setBorder(new EmptyBorder(10, 0, 0, 0));
 
-		p.add(newGameButton);
-		p.add(joinGameButton);
-
-		p.add(teamButton);
-		p.add(leaveGameButton);
-
-		JPanel row = new JPanel(new GridLayout(1, 2, 8, 0));
-		row.add(rollButton);
-		row.add(proofButton);
-		p.add(row);
-
-		p.add(refreshButton);
+		p.add(connectButton);
+		p.add(disconnectButton);
+		p.add(actionButton);
 
 		refreshButtons();
 		return p;
@@ -150,23 +103,35 @@ public class SnakesLaddersPanel extends PluginPanel
 
 	private void refreshButtons()
 	{
-		// Lobby visible when not in game
-		newGameButton.setVisible(!inGame);
-		joinGameButton.setVisible(!inGame);
+		connectButton.setVisible(!connected);
+		disconnectButton.setVisible(connected);
 
-		// In-game visible when in game
-		teamButton.setVisible(inGame);
-		leaveGameButton.setVisible(inGame);
-		rollButton.setVisible(inGame);
-		proofButton.setVisible(inGame);
-		refreshButton.setVisible(inGame);
+		// Action button visible when connected
+		actionButton.setVisible(connected);
 
-		teamButton.setEnabled(inGame);
-		leaveGameButton.setEnabled(inGame);
+		// Contextual action
+		if (!connected)
+		{
+			actionButton.setText("…");
+			actionButton.setEnabled(false);
+			return;
+		}
 
-		rollButton.setEnabled(inGame && hasTeam && !awaitingProof);
-		proofButton.setEnabled(inGame && hasTeam && awaitingProof);
-		refreshButton.setEnabled(inGame);
+		if (awaitingProof)
+		{
+			actionButton.setText("Submit Proof");
+			actionButton.setEnabled(true);
+		}
+		else if (canRoll)
+		{
+			actionButton.setText("Roll");
+			actionButton.setEnabled(true);
+		}
+		else
+		{
+			actionButton.setText("Waiting…");
+			actionButton.setEnabled(false);
+		}
 	}
 
 	public void setHeader(String clan, String team, String rsn)
@@ -198,35 +163,16 @@ public class SnakesLaddersPanel extends PluginPanel
 		refreshButtons();
 	}
 
-	public void setInGame(boolean inGame)
+	public void setConnected(boolean connected)
 	{
-		this.inGame = inGame;
+		this.connected = connected;
 		refreshButtons();
 	}
 
-	public void setHasTeam(boolean hasTeam)
+	public void setCanRoll(boolean canRoll)
 	{
-		this.hasTeam = hasTeam;
+		this.canRoll = canRoll;
 		refreshButtons();
-	}
-
-	public void setTileInfo(String text)
-	{
-		tileInfoArea.setText(text == null ? "" : text);
-	}
-
-	public void clearStandings()
-	{
-		standingsModel.setRowCount(0);
-	}
-
-	public void addStandingRow(String team, int tile, String task)
-	{
-		standingsModel.addRow(new Object[]{
-			team == null ? "-" : team,
-			tile,
-			task == null ? "-" : task
-		});
 	}
 
 	private static String blankToDash(String s)
