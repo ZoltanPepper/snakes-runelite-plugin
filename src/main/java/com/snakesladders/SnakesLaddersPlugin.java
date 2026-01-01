@@ -19,11 +19,14 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
-import net.runelite.client.ui.overlay.OverlayManager;
+
+import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 
 import javax.inject.Inject;
 import javax.swing.JOptionPane;
 import java.awt.image.BufferedImage;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -37,24 +40,33 @@ public class SnakesLaddersPlugin extends Plugin
 	@Inject private ClientToolbar clientToolbar;
 	@Inject private ConfigManager configManager;
 
-	@Inject private OverlayManager overlayManager;
-	@Inject private SnakesOverlay snakesOverlay;
+	@Inject private InfoBoxManager infoBoxManager;
 
 	private final Gson gson = new Gson();
 
 	private SnakesLaddersPanel panel;
 	private NavigationButton navButton;
 
+	// Existing 30s state refresh (kept for now)
 	private Timer refreshTimer;
+
+	// New: overlay polling + local tick for the InfoBox
+	private Timer overlayPollTimer;
+	private Timer overlayTickTimer;
 
 	private String currentTeamName = "-";
 
-	// ✅ shared overlay state
+	// ✅ shared overlay state (kept for now; we’ll gradually stop using it)
 	private final OverlayModel overlayModel = new OverlayModel();
 	public OverlayModel getOverlayModel()
 	{
 		return overlayModel;
 	}
+
+	// New: InfoBox + overlay polling state
+	private SnakesTileInfoBox tileInfoBox;
+	private String overlayEtag;
+	private OverlaySnapshot overlaySnapshot; // lightweight parsed overlay
 
 	@Override
 	protected void startUp()
@@ -68,9 +80,6 @@ public class SnakesLaddersPlugin extends Plugin
 			.panel(panel)
 			.build();
 		clientToolbar.addNavigation(navButton);
-
-		// ✅ add overlay
-		overlayManager.add(snakesOverlay);
 
 		updateHeader();
 
@@ -100,9 +109,12 @@ public class SnakesLaddersPlugin extends Plugin
 		overlayModel.setTeamName(currentTeamName);
 		overlayModel.setStatusLine(inGame ? "In game" : "Not in game");
 
+		// Create InfoBox (only if we have a gameId)
 		if (inGame)
 		{
+			ensureInfoBox();
 			startAutoRefresh();
+			startOverlayPolling();
 			clientThread.invokeLater(this::refreshState);
 		}
 	}
@@ -111,12 +123,8 @@ public class SnakesLaddersPlugin extends Plugin
 	protected void shutDown()
 	{
 		stopAutoRefresh();
-
-		// ✅ remove overlay
-		if (overlayManager != null && snakesOverlay != null)
-		{
-			overlayManager.remove(snakesOverlay);
-		}
+		stopOverlayPolling();
+		removeInfoBox();
 
 		if (navButton != null)
 		{
@@ -145,6 +153,8 @@ public class SnakesLaddersPlugin extends Plugin
 		overlayModel.setClanName("Sixth Degree — Snakes & Ladders");
 		overlayModel.setTeamName(currentTeamName);
 	}
+
+	/* -------------------- Existing auto refresh (kept for /state endpoint) -------------------- */
 
 	private void startAutoRefresh()
 	{
@@ -175,6 +185,208 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 
+	/* -------------------- New: RuneLite InfoBox + overlay polling -------------------- */
+
+	private void ensureInfoBox()
+	{
+		if (tileInfoBox != null) return;
+		tileInfoBox = new SnakesTileInfoBox(new BufferedImage(32, 32, BufferedImage.TYPE_INT_ARGB));
+		infoBoxManager.addInfoBox(tileInfoBox);
+	}
+
+	private void removeInfoBox()
+	{
+		if (tileInfoBox != null)
+		{
+			infoBoxManager.removeInfoBox(tileInfoBox);
+			tileInfoBox = null;
+		}
+	}
+
+	private void startOverlayPolling()
+	{
+		stopOverlayPolling();
+
+		overlayEtag = null;
+		overlaySnapshot = null;
+
+		// Poll backend overlay endpoint every 5s (ETag/304)
+		overlayPollTimer = new Timer("snakes-overlay-poll", true);
+		overlayPollTimer.scheduleAtFixedRate(new TimerTask()
+		{
+			@Override
+			public void run()
+			{
+				clientThread.invokeLater(() ->
+				{
+					try
+					{
+						pollOverlayOnce();
+					}
+					catch (Exception ex)
+					{
+						// Don't spam logs hard; show via tooltip/status
+						log.debug("Overlay poll error", ex);
+						if (tileInfoBox != null)
+						{
+							tileInfoBox.setStatus("Overlay offline");
+							tileInfoBox.setTooltipLines("Snakes & Ladders", "Overlay endpoint unreachable.");
+						}
+					}
+				});
+			}
+		}, 0, 5_000);
+
+		// Local 1s tick to keep countdown text smooth without hitting backend
+		overlayTickTimer = new Timer("snakes-overlay-tick", true);
+		overlayTickTimer.scheduleAtFixedRate(new TimerTask()
+		{
+			@Override
+			public void run()
+			{
+				clientThread.invokeLater(() ->
+				{
+					if (tileInfoBox == null) return;
+					if (overlaySnapshot == null) return;
+
+					// Update countdown text only
+					String countdown = computeCountdownText(overlaySnapshot);
+					tileInfoBox.setText(countdown);
+				});
+			}
+		}, 1_000, 1_000);
+	}
+
+	private void stopOverlayPolling()
+	{
+		if (overlayPollTimer != null)
+		{
+			overlayPollTimer.cancel();
+			overlayPollTimer = null;
+		}
+		if (overlayTickTimer != null)
+		{
+			overlayTickTimer.cancel();
+			overlayTickTimer = null;
+		}
+	}
+
+	/**
+	 * Polls: GET /games/:id/overlay?rsn=...
+	 * Uses SnakesApi.getOverlay() which supports ETag/304.
+	 *
+	 * Backend note:
+	 * - If you haven't added /overlay yet, this will show "Overlay offline"
+	 *   but won't crash anything.
+	 */
+	private void pollOverlayOnce() throws Exception
+	{
+		String baseUrl = config.apiBaseUrl();
+		String gameId = config.gameId();
+
+		if (gameId == null || gameId.trim().isEmpty())
+		{
+			return;
+		}
+
+		String rsn = client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "";
+		if (rsn == null) rsn = "";
+
+		ensureInfoBox();
+
+		SnakesApi.ApiResult res = SnakesApi.getOverlay(baseUrl, gameId.trim(), rsn.trim(), overlayEtag);
+
+		// Update ETag if present
+		if (res.etag != null && !res.etag.trim().isEmpty())
+		{
+			overlayEtag = res.etag.trim();
+		}
+
+		// 304 Not Modified -> nothing else to do
+		if (res.isNotModified())
+		{
+			// Still update countdown (tick does it), keep status
+			return;
+		}
+
+		// Parse overlay JSON (lightweight)
+		if (res.body == null || res.body.trim().isEmpty())
+		{
+			return;
+		}
+
+		JsonObject root = gson.fromJson(res.body, JsonObject.class);
+
+		OverlaySnapshot snap = OverlaySnapshot.fromJson(root);
+		overlaySnapshot = snap;
+
+		// Update InfoBox (icon comes later when we add image cache; for now text+tooltip)
+		if (tileInfoBox != null)
+		{
+			String countdown = computeCountdownText(snap);
+			tileInfoBox.setText(countdown);
+
+			String status = snap.awaitingProof ? "Awaiting proof" : "Snakes & Ladders";
+			tileInfoBox.setStatus(status);
+
+			// Tooltip: title + description
+			if (snap.tileTitle != null && !snap.tileTitle.isEmpty())
+			{
+				tileInfoBox.setTooltipLines(
+					"Tile " + snap.tileIndex + (snap.tileKind != null ? " (" + snap.tileKind + ")" : ""),
+					snap.tileTitle,
+					snap.tileDescription == null ? "" : snap.tileDescription,
+					snap.awaitingProof ? "Proof required" : ""
+				);
+			}
+			else
+			{
+				tileInfoBox.setTooltipLines("Snakes & Ladders", "Waiting for tile…");
+			}
+		}
+	}
+
+	private String computeCountdownText(OverlaySnapshot snap)
+	{
+		Instant now = Instant.now();
+		Instant target = null;
+
+		if ("prestart".equalsIgnoreCase(snap.phase))
+		{
+			target = snap.startTime;
+		}
+		else if ("running".equalsIgnoreCase(snap.phase))
+		{
+			target = snap.endTime;
+		}
+		else
+		{
+			return ""; // ended
+		}
+
+		if (target == null) return "";
+
+		long seconds = Duration.between(now, target).getSeconds();
+		if (seconds < 0) seconds = 0;
+
+		return formatSeconds(seconds);
+	}
+
+	private static String formatSeconds(long seconds)
+	{
+		long h = seconds / 3600;
+		long m = (seconds % 3600) / 60;
+		long s = seconds % 60;
+
+		if (h > 0)
+		{
+			return String.format("%d:%02d:%02d", h, m, s);
+		}
+		return String.format("%d:%02d", m, s);
+	}
+
+	/* -------------------- Existing flows (mostly unchanged) -------------------- */
+
 	private void joinGame()
 	{
 		if (panel == null) return;
@@ -196,7 +408,9 @@ public class SnakesLaddersPlugin extends Plugin
 		overlayModel.setTileLine("");
 		overlayModel.setCountdownLine("");
 
+		ensureInfoBox();
 		startAutoRefresh();
+		startOverlayPolling();
 		refreshState();
 	}
 
@@ -225,6 +439,8 @@ public class SnakesLaddersPlugin extends Plugin
 		overlayModel.setTileImage(null);
 
 		stopAutoRefresh();
+		stopOverlayPolling();
+		removeInfoBox();
 	}
 
 	private void newGame()
@@ -278,7 +494,9 @@ public class SnakesLaddersPlugin extends Plugin
 			overlayModel.setStatusLine("Game created");
 			overlayModel.setTileLine("Share code: " + gameId);
 
+			ensureInfoBox();
 			startAutoRefresh();
+			startOverlayPolling();
 			refreshState();
 
 			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Game created: " + gameId, null);
@@ -551,5 +769,76 @@ public class SnakesLaddersPlugin extends Plugin
 	SnakesLaddersConfig provideConfig(ConfigManager configManager)
 	{
 		return configManager.getConfig(SnakesLaddersConfig.class);
+	}
+
+	/* -------------------- Lightweight overlay snapshot parser -------------------- */
+
+	private static final class OverlaySnapshot
+	{
+		final String phase;
+		final Instant startTime;
+		final Instant endTime;
+
+		final int tileIndex;
+		final String tileKind;
+		final String tileTitle;
+		final String tileDescription;
+
+		final boolean awaitingProof;
+
+		private OverlaySnapshot(
+			String phase,
+			Instant startTime,
+			Instant endTime,
+			int tileIndex,
+			String tileKind,
+			String tileTitle,
+			String tileDescription,
+			boolean awaitingProof
+		)
+		{
+			this.phase = phase;
+			this.startTime = startTime;
+			this.endTime = endTime;
+			this.tileIndex = tileIndex;
+			this.tileKind = tileKind;
+			this.tileTitle = tileTitle;
+			this.tileDescription = tileDescription;
+			this.awaitingProof = awaitingProof;
+		}
+
+		static OverlaySnapshot fromJson(JsonObject root)
+		{
+			String phase = root.has("phase") ? root.get("phase").getAsString() : "running";
+
+			Instant start = parseInstant(root, "startTime");
+			Instant end = parseInstant(root, "endTime");
+
+			JsonObject tile = root.has("tile") && root.get("tile").isJsonObject() ? root.getAsJsonObject("tile") : null;
+			int tileIndex = tile != null && tile.has("tileIndex") ? tile.get("tileIndex").getAsInt() : 0;
+			String kind = tile != null && tile.has("kind") ? tile.get("kind").getAsString() : "";
+			String title = tile != null && tile.has("title") && !tile.get("title").isJsonNull() ? tile.get("title").getAsString() : "";
+			String desc = tile != null && tile.has("description") && !tile.get("description").isJsonNull() ? tile.get("description").getAsString() : "";
+
+			JsonObject flags = root.has("flags") && root.get("flags").isJsonObject() ? root.getAsJsonObject("flags") : null;
+			boolean awaiting = flags != null && flags.has("awaitingProof") && flags.get("awaitingProof").getAsBoolean();
+
+			return new OverlaySnapshot(phase, start, end, tileIndex, kind, title, desc, awaiting);
+		}
+
+		private static Instant parseInstant(JsonObject root, String field)
+		{
+			try
+			{
+				if (!root.has(field) || root.get(field).isJsonNull()) return null;
+				String s = root.get(field).getAsString();
+				if (s == null || s.trim().isEmpty()) return null;
+				return Instant.parse(s.trim());
+			}
+			catch (Exception ignored)
+			{
+				return null;
+			}
+		}
 	}
 }
