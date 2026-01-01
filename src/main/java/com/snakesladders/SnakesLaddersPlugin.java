@@ -1,8 +1,6 @@
 package com.snakesladders;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
@@ -19,7 +17,6 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
-
 import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 
 import javax.inject.Inject;
@@ -47,26 +44,17 @@ public class SnakesLaddersPlugin extends Plugin
 	private SnakesLaddersPanel panel;
 	private NavigationButton navButton;
 
-	// Existing 30s state refresh (kept for now)
-	private Timer refreshTimer;
-
-	// New: overlay polling + local tick for the InfoBox
+	// Overlay polling + local tick for InfoBox
 	private Timer overlayPollTimer;
 	private Timer overlayTickTimer;
 
+	private String currentClanName = "Sixth Degree";
 	private String currentTeamName = "-";
 
-	// ✅ shared overlay state (kept for now; we’ll gradually stop using it)
-	private final OverlayModel overlayModel = new OverlayModel();
-	public OverlayModel getOverlayModel()
-	{
-		return overlayModel;
-	}
-
-	// New: InfoBox + overlay polling state
+	// InfoBox + overlay polling state
 	private SnakesTileInfoBox tileInfoBox;
 	private String overlayEtag;
-	private OverlaySnapshot overlaySnapshot; // lightweight parsed overlay
+	private OverlaySnapshot overlaySnapshot; // last parsed overlay
 
 	@Override
 	protected void startUp()
@@ -81,48 +69,27 @@ public class SnakesLaddersPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navButton);
 
+		// Wire new panel buttons
+		panel.connectButton.addActionListener(e -> clientThread.invokeLater(this::connect));
+		panel.disconnectButton.addActionListener(e -> clientThread.invokeLater(this::disconnect));
+		panel.actionButton.addActionListener(e -> clientThread.invokeLater(this::action));
+
 		updateHeader();
 
-		// Lobby buttons
-		panel.newGameButton.addActionListener(e -> clientThread.invokeLater(this::newGame));
-		panel.joinGameButton.addActionListener(e -> clientThread.invokeLater(this::joinGame));
+		boolean connected = config.gameId() != null && !config.gameId().trim().isEmpty();
+		panel.setConnected(connected);
+		panel.setStatus(connected ? "Connected" : "Not connected");
 
-		// In-game buttons
-		panel.teamButton.addActionListener(e -> clientThread.invokeLater(this::createOrJoinTeam));
-		panel.leaveGameButton.addActionListener(e -> clientThread.invokeLater(this::leaveGame));
-
-		panel.rollButton.addActionListener(e -> clientThread.invokeLater(this::rollDice));
-		panel.proofButton.addActionListener(e -> clientThread.invokeLater(this::submitProof));
-		panel.refreshButton.addActionListener(e -> clientThread.invokeLater(this::refreshState));
-
-		// initial UI state based on config
-		boolean inGame = config.gameId() != null && !config.gameId().trim().isEmpty();
-		panel.setInGame(inGame);
-
-		boolean hasJwt = config.jwtToken() != null && !config.jwtToken().trim().isEmpty();
-		panel.setHasTeam(hasJwt);
-
-		panel.setStatus(inGame ? "In game (refreshing…)" : "Not in game");
-		panel.setTileInfo(inGame ? "Click Refresh or wait 30s." : "Click Join Game or New Game.");
-
-		overlayModel.setClanName("Snakes & Ladders");
-		overlayModel.setTeamName(currentTeamName);
-		overlayModel.setStatusLine(inGame ? "In game" : "Not in game");
-
-		// Create InfoBox (only if we have a gameId)
-		if (inGame)
+		if (connected)
 		{
 			ensureInfoBox();
-			startAutoRefresh();
 			startOverlayPolling();
-			clientThread.invokeLater(this::refreshState);
 		}
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		stopAutoRefresh();
 		stopOverlayPolling();
 		removeInfoBox();
 
@@ -148,50 +115,79 @@ public class SnakesLaddersPlugin extends Plugin
 		if (panel == null) return;
 
 		String rsn = client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "-";
-		panel.setHeader("Sixth Degree", currentTeamName, rsn);
-
-		overlayModel.setClanName("Sixth Degree — Snakes & Ladders");
-		overlayModel.setTeamName(currentTeamName);
+		panel.setHeader(currentClanName, currentTeamName, rsn);
 	}
 
-	/* -------------------- Existing auto refresh (kept for /state endpoint) -------------------- */
+	/* -------------------- New flow: Connect / Disconnect / Action -------------------- */
 
-	private void startAutoRefresh()
+	private void connect()
 	{
-		stopAutoRefresh();
-		refreshTimer = new Timer("snakes-refresh", true);
-		refreshTimer.scheduleAtFixedRate(new TimerTask()
-		{
-			@Override
-			public void run()
-			{
-				clientThread.invokeLater(() ->
-				{
-					if (panel != null && panel.isShowing())
-					{
-						refreshState();
-					}
-				});
-			}
-		}, 0, 30_000);
+		if (panel == null) return;
+
+		String gameId = JOptionPane.showInputDialog(panel, "Paste Game Code (game_xxx):", config.gameId());
+		if (gameId == null || gameId.trim().isEmpty()) return;
+
+		configManager.setConfiguration("snakesladders", "gameId", gameId.trim());
+
+		// Note: JWT stays as-is; if they previously joined, they can still roll/proof
+		panel.setConnected(true);
+		panel.setStatus("Connected");
+		panel.setTile(0);
+		panel.setAwaitingProof(false);
+		panel.setCanRoll(false);
+
+		ensureInfoBox();
+		startOverlayPolling();
+
+		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Connected to " + gameId.trim(), null);
 	}
 
-	private void stopAutoRefresh()
+	private void disconnect()
 	{
-		if (refreshTimer != null)
+		if (panel == null) return;
+
+		configManager.setConfiguration("snakesladders", "gameId", "");
+		configManager.setConfiguration("snakesladders", "jwtToken", "");
+
+		currentTeamName = "-";
+		updateHeader();
+
+		panel.setConnected(false);
+		panel.setStatus("Not connected");
+		panel.setTile(0);
+		panel.setAwaitingProof(false);
+		panel.setCanRoll(false);
+
+		stopOverlayPolling();
+		removeInfoBox();
+	}
+
+	private void action()
+	{
+		if (panel == null) return;
+
+		// Contextual: if awaiting proof, submit proof; else roll (if allowed)
+		if (overlaySnapshot != null && overlaySnapshot.awaitingProof)
 		{
-			refreshTimer.cancel();
-			refreshTimer = null;
+			submitProof();
+		}
+		else
+		{
+			rollDice();
 		}
 	}
 
-	/* -------------------- New: RuneLite InfoBox + overlay polling -------------------- */
+	/* -------------------- InfoBox lifecycle + overlay polling -------------------- */
 
 	private void ensureInfoBox()
 	{
 		if (tileInfoBox != null) return;
+
+		// Placeholder icon for now. Later we’ll swap icon to tile image.
 		tileInfoBox = new SnakesTileInfoBox(new BufferedImage(32, 32, BufferedImage.TYPE_INT_ARGB));
 		infoBoxManager.addInfoBox(tileInfoBox);
+
+		tileInfoBox.setTooltipLines("Snakes & Ladders", "Connecting…");
 	}
 
 	private void removeInfoBox()
@@ -225,19 +221,25 @@ public class SnakesLaddersPlugin extends Plugin
 					}
 					catch (Exception ex)
 					{
-						// Don't spam logs hard; show via tooltip/status
 						log.debug("Overlay poll error", ex);
 						if (tileInfoBox != null)
 						{
+							tileInfoBox.setText("");
 							tileInfoBox.setStatus("Overlay offline");
 							tileInfoBox.setTooltipLines("Snakes & Ladders", "Overlay endpoint unreachable.");
+						}
+
+						if (panel != null)
+						{
+							panel.setStatus("Overlay offline");
+							panel.setCanRoll(false);
 						}
 					}
 				});
 			}
 		}, 0, 5_000);
 
-		// Local 1s tick to keep countdown text smooth without hitting backend
+		// Local 1s tick to keep countdown text smooth
 		overlayTickTimer = new Timer("snakes-overlay-tick", true);
 		overlayTickTimer.scheduleAtFixedRate(new TimerTask()
 		{
@@ -249,9 +251,7 @@ public class SnakesLaddersPlugin extends Plugin
 					if (tileInfoBox == null) return;
 					if (overlaySnapshot == null) return;
 
-					// Update countdown text only
-					String countdown = computeCountdownText(overlaySnapshot);
-					tileInfoBox.setText(countdown);
+					tileInfoBox.setText(computeCountdownText(overlaySnapshot));
 				});
 			}
 		}, 1_000, 1_000);
@@ -271,14 +271,6 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 
-	/**
-	 * Polls: GET /games/:id/overlay?rsn=...
-	 * Uses SnakesApi.getOverlay() which supports ETag/304.
-	 *
-	 * Backend note:
-	 * - If you haven't added /overlay yet, this will show "Overlay offline"
-	 *   but won't crash anything.
-	 */
 	private void pollOverlayOnce() throws Exception
 	{
 		String baseUrl = config.apiBaseUrl();
@@ -296,44 +288,52 @@ public class SnakesLaddersPlugin extends Plugin
 
 		SnakesApi.ApiResult res = SnakesApi.getOverlay(baseUrl, gameId.trim(), rsn.trim(), overlayEtag);
 
-		// Update ETag if present
 		if (res.etag != null && !res.etag.trim().isEmpty())
 		{
 			overlayEtag = res.etag.trim();
 		}
 
-		// 304 Not Modified -> nothing else to do
 		if (res.isNotModified())
 		{
-			// Still update countdown (tick does it), keep status
 			return;
 		}
 
-		// Parse overlay JSON (lightweight)
 		if (res.body == null || res.body.trim().isEmpty())
 		{
 			return;
 		}
 
 		JsonObject root = gson.fromJson(res.body, JsonObject.class);
-
 		OverlaySnapshot snap = OverlaySnapshot.fromJson(root);
 		overlaySnapshot = snap;
 
-		// Update InfoBox (icon comes later when we add image cache; for now text+tooltip)
+		// Update panel from overlay
+		if (panel != null)
+		{
+			panel.setConnected(true);
+			panel.setTile(snap.tileIndex);
+			panel.setAwaitingProof(snap.awaitingProof);
+
+			// canRoll comes from backend flags when you add it; for now:
+			boolean hasJwt = config.jwtToken() != null && !config.jwtToken().trim().isEmpty();
+			boolean canRoll = hasJwt && !snap.awaitingProof && "running".equalsIgnoreCase(snap.phase);
+			panel.setCanRoll(canRoll);
+
+			panel.setStatus(statusFromPhase(snap.phase, snap.awaitingProof));
+		}
+
+		// Update InfoBox
 		if (tileInfoBox != null)
 		{
-			String countdown = computeCountdownText(snap);
-			tileInfoBox.setText(countdown);
+			tileInfoBox.setText(computeCountdownText(snap));
 
 			String status = snap.awaitingProof ? "Awaiting proof" : "Snakes & Ladders";
 			tileInfoBox.setStatus(status);
 
-			// Tooltip: title + description
 			if (snap.tileTitle != null && !snap.tileTitle.isEmpty())
 			{
 				tileInfoBox.setTooltipLines(
-					"Tile " + snap.tileIndex + (snap.tileKind != null ? " (" + snap.tileKind + ")" : ""),
+					"Tile " + snap.tileIndex + (snap.tileKind != null && !snap.tileKind.isEmpty() ? " (" + snap.tileKind + ")" : ""),
 					snap.tileTitle,
 					snap.tileDescription == null ? "" : snap.tileDescription,
 					snap.awaitingProof ? "Proof required" : ""
@@ -346,10 +346,20 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 
+	private static String statusFromPhase(String phase, boolean awaitingProof)
+	{
+		if (awaitingProof) return "Awaiting proof";
+		if (phase == null) return "Connected";
+		if ("prestart".equalsIgnoreCase(phase)) return "Waiting for start";
+		if ("running".equalsIgnoreCase(phase)) return "Running";
+		if ("ended".equalsIgnoreCase(phase)) return "Ended";
+		return "Connected";
+	}
+
 	private String computeCountdownText(OverlaySnapshot snap)
 	{
 		Instant now = Instant.now();
-		Instant target = null;
+		Instant target;
 
 		if ("prestart".equalsIgnoreCase(snap.phase))
 		{
@@ -361,7 +371,7 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 		else
 		{
-			return ""; // ended
+			return "";
 		}
 
 		if (target == null) return "";
@@ -378,301 +388,11 @@ public class SnakesLaddersPlugin extends Plugin
 		long m = (seconds % 3600) / 60;
 		long s = seconds % 60;
 
-		if (h > 0)
-		{
-			return String.format("%d:%02d:%02d", h, m, s);
-		}
+		if (h > 0) return String.format("%d:%02d:%02d", h, m, s);
 		return String.format("%d:%02d", m, s);
 	}
 
-	/* -------------------- Existing flows (mostly unchanged) -------------------- */
-
-	private void joinGame()
-	{
-		if (panel == null) return;
-
-		String gameId = JOptionPane.showInputDialog(panel, "Paste Game Code (game_xxx):", config.gameId());
-		if (gameId == null || gameId.trim().isEmpty()) return;
-
-		configManager.setConfiguration("snakesladders", "gameId", gameId.trim());
-		configManager.setConfiguration("snakesladders", "jwtToken", ""); // clear
-		currentTeamName = "-";
-		panel.setTeam("-");
-		panel.setHasTeam(false);
-
-		panel.setInGame(true);
-		panel.setStatus("Joined game - not in a team");
-		panel.setTileInfo("Click Create/Join Team, or Refresh to view standings.");
-
-		overlayModel.setStatusLine("Joined game");
-		overlayModel.setTileLine("");
-		overlayModel.setCountdownLine("");
-
-		ensureInfoBox();
-		startAutoRefresh();
-		startOverlayPolling();
-		refreshState();
-	}
-
-	private void leaveGame()
-	{
-		if (panel == null) return;
-
-		configManager.setConfiguration("snakesladders", "gameId", "");
-		configManager.setConfiguration("snakesladders", "jwtToken", "");
-
-		currentTeamName = "-";
-		panel.setTeam("-");
-		panel.setHasTeam(false);
-		panel.setAwaitingProof(false);
-		panel.setTile(0);
-		panel.clearStandings();
-
-		panel.setInGame(false);
-		panel.setStatus("Not in game");
-		panel.setTileInfo("Click Join Game or New Game.");
-
-		overlayModel.setTeamName("-");
-		overlayModel.setStatusLine("Not in game");
-		overlayModel.setTileLine("");
-		overlayModel.setCountdownLine("");
-		overlayModel.setTileImage(null);
-
-		stopAutoRefresh();
-		stopOverlayPolling();
-		removeInfoBox();
-	}
-
-	private void newGame()
-	{
-		if (panel == null) return;
-
-		String baseUrl = config.apiBaseUrl();
-		String webhook = config.discordWebhookUrl();
-
-		String clan = JOptionPane.showInputDialog(panel, "Clan name:", "Sixth Degree");
-		if (clan == null || clan.trim().isEmpty()) return;
-
-		String hostPass = JOptionPane.showInputDialog(panel, "Admin password (hostPassword):");
-		if (hostPass == null || hostPass.trim().isEmpty()) return;
-
-		String boardUrl = JOptionPane.showInputDialog(panel, "Board JSON URL:", "https://zoltanpepper.github.io/snakes-board-6degree/board.json");
-		if (boardUrl == null || boardUrl.trim().isEmpty()) return;
-
-		String boardSizeStr = JOptionPane.showInputDialog(panel, "Board size (finish tile index):", "100");
-		if (boardSizeStr == null || boardSizeStr.trim().isEmpty()) return;
-
-		int boardSize;
-		try { boardSize = Integer.parseInt(boardSizeStr.trim()); }
-		catch (Exception e) { panel.setStatus("Invalid board size"); return; }
-
-		try
-		{
-			String json = SnakesApi.createGame(baseUrl, webhook, clan.trim(), hostPass.trim(), boardSize, boardUrl.trim());
-			JsonObject root = gson.fromJson(json, JsonObject.class);
-
-			String gameId = root.has("gameId") ? root.get("gameId").getAsString() : "";
-			if (gameId.isEmpty())
-			{
-				panel.setStatus("Create failed (no gameId)");
-				return;
-			}
-
-			// save + join immediately
-			configManager.setConfiguration("snakesladders", "gameId", gameId);
-			configManager.setConfiguration("snakesladders", "jwtToken", "");
-
-			panel.setInGame(true);
-			panel.setHasTeam(false);
-			currentTeamName = "-";
-			panel.setTeam("-");
-
-			panel.setStatus("Game created");
-			panel.setTileInfo("Game Code:\n" + gameId + "\n\nShare this code with your clan.\nThen click Create/Join Team.");
-
-			overlayModel.setClanName(clan.trim() + " — Snakes & Ladders");
-			overlayModel.setStatusLine("Game created");
-			overlayModel.setTileLine("Share code: " + gameId);
-
-			ensureInfoBox();
-			startAutoRefresh();
-			startOverlayPolling();
-			refreshState();
-
-			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Game created: " + gameId, null);
-		}
-		catch (Exception ex)
-		{
-			log.warn("Create game error", ex);
-			panel.setStatus("Create game error");
-			overlayModel.setStatusLine("Create game error");
-		}
-	}
-
-	private void createOrJoinTeam()
-	{
-		if (panel == null) return;
-
-		String baseUrl = config.apiBaseUrl();
-		String gameId = config.gameId();
-		String webhook = config.discordWebhookUrl();
-
-		if (gameId == null || gameId.trim().isEmpty())
-		{
-			panel.setStatus("No game joined");
-			return;
-		}
-
-		String rsn = client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : null;
-		if (rsn == null || rsn.trim().isEmpty())
-		{
-			panel.setStatus("RSN not found");
-			return;
-		}
-
-		String team = JOptionPane.showInputDialog(panel, "Team name:", "");
-		if (team == null || team.trim().isEmpty()) return;
-
-		String pass = JOptionPane.showInputDialog(panel, "Team password (new or existing):");
-		if (pass == null || pass.trim().isEmpty()) return;
-
-		try
-		{
-			String json = SnakesApi.register(baseUrl, gameId, webhook, team.trim(), pass.trim(), rsn.trim());
-			JsonObject root = gson.fromJson(json, JsonObject.class);
-
-			String token = root.has("token") ? root.get("token").getAsString() : "";
-			String teamName = root.has("teamName") ? root.get("teamName").getAsString() : team.trim();
-
-			if (token.isEmpty())
-			{
-				panel.setStatus("Join team failed");
-				return;
-			}
-
-			configManager.setConfiguration("snakesladders", "jwtToken", token);
-
-			currentTeamName = teamName;
-			panel.setTeam(teamName);
-			panel.setHasTeam(true);
-			panel.setStatus("In team: " + teamName);
-
-			overlayModel.setTeamName(teamName);
-			overlayModel.setStatusLine("In team");
-
-			updateHeader();
-			refreshState();
-		}
-		catch (Exception ex)
-		{
-			log.warn("Join team error", ex);
-			panel.setStatus("Join team error");
-			overlayModel.setStatusLine("Join team error");
-		}
-	}
-
-	private void refreshState()
-	{
-		if (panel == null) return;
-
-		String baseUrl = config.apiBaseUrl();
-		String gameId = config.gameId();
-
-		if (gameId == null || gameId.trim().isEmpty())
-		{
-			panel.setStatus("Not in game");
-			return;
-		}
-
-		try
-		{
-			String json = SnakesApi.getGameState(baseUrl, gameId);
-			JsonObject root = gson.fromJson(json, JsonObject.class);
-
-			JsonObject game = root.has("game") && root.get("game").isJsonObject() ? root.getAsJsonObject("game") : null;
-			JsonArray teams = root.has("teams") && root.get("teams").isJsonArray() ? root.getAsJsonArray("teams") : new JsonArray();
-
-			panel.clearStandings();
-
-			JsonObject myTeam = null;
-
-			for (JsonElement el : teams)
-			{
-				if (!el.isJsonObject()) continue;
-				JsonObject t = el.getAsJsonObject();
-
-				String name = t.has("name") ? t.get("name").getAsString() : "-";
-				int pos = t.has("position") ? t.get("position").getAsInt() : 0;
-
-				String taskTitle = "-";
-				if (t.has("activeTile") && t.get("activeTile").isJsonObject())
-				{
-					JsonObject at = t.getAsJsonObject("activeTile");
-					if (at.has("title") && !at.get("title").isJsonNull())
-						taskTitle = at.get("title").getAsString();
-				}
-
-				panel.addStandingRow(name, pos, taskTitle);
-
-				if (!currentTeamName.equals("-") && name.equalsIgnoreCase(currentTeamName))
-				{
-					myTeam = t;
-				}
-			}
-
-			boolean awaiting = false;
-			int myPos = 0;
-			String info = "Click Create/Join Team to participate.";
-
-			if (myTeam != null)
-			{
-				myPos = myTeam.has("position") ? myTeam.get("position").getAsInt() : 0;
-				awaiting = myTeam.has("awaitingProof") && myTeam.get("awaitingProof").getAsBoolean();
-
-				info = "Tile " + myPos;
-				String title = "-";
-				String kind = "empty";
-
-				if (myTeam.has("activeTile") && myTeam.get("activeTile").isJsonObject())
-				{
-					JsonObject at = myTeam.getAsJsonObject("activeTile");
-					kind = at.has("kind") ? at.get("kind").getAsString() : "empty";
-					if (at.has("title") && !at.get("title").isJsonNull())
-						title = at.get("title").getAsString();
-				}
-
-				info = "Tile " + myPos + " (" + kind + ")\n" + title;
-
-				overlayModel.setTileLine("Tile " + myPos);
-				overlayModel.setStatusLine(awaiting ? "Awaiting proof" : "Ready");
-			}
-			else
-			{
-				overlayModel.setTileLine("");
-				overlayModel.setStatusLine("Spectating / not in team");
-			}
-
-			panel.setTile(myPos);
-			panel.setAwaitingProof(awaiting);
-
-			String status = "Ready";
-			if (game != null && game.has("status"))
-			{
-				String gs = game.get("status").getAsString();
-				if ("finished".equalsIgnoreCase(gs)) status = "Finished";
-			}
-			if (awaiting) status = "Awaiting proof";
-
-			panel.setStatus(status);
-			panel.setTileInfo(info);
-		}
-		catch (Exception ex)
-		{
-			log.warn("Refresh error", ex);
-			panel.setStatus("Error fetching state");
-			overlayModel.setStatusLine("State fetch error");
-		}
-	}
+	/* -------------------- Roll + Proof (kept) -------------------- */
 
 	private void rollDice()
 	{
@@ -681,14 +401,20 @@ public class SnakesLaddersPlugin extends Plugin
 		String token = config.jwtToken();
 		if (token == null || token.trim().isEmpty())
 		{
-			panel.setStatus("Join a team first");
-			panel.setHasTeam(false);
+			panel.setStatus("No team token (join via web)");
+			panel.setCanRoll(false);
 			return;
 		}
 
 		String baseUrl = config.apiBaseUrl();
 		String gameId = config.gameId();
 		String webhook = config.discordWebhookUrl();
+
+		if (gameId == null || gameId.trim().isEmpty())
+		{
+			panel.setStatus("Not connected");
+			return;
+		}
 
 		try
 		{
@@ -703,19 +429,16 @@ public class SnakesLaddersPlugin extends Plugin
 
 			panel.setTile(to);
 			panel.setAwaitingProof(awaiting);
-			panel.setStatus(awaiting ? "Awaiting proof" : "Ready");
-			panel.setTileInfo("Rolled " + roll + "\n" + from + " → " + to);
+			panel.setStatus(awaiting ? "Awaiting proof" : "Running");
+			panel.setCanRoll(!awaiting);
 
-			overlayModel.setTileLine("Tile " + to);
-			overlayModel.setStatusLine(awaiting ? "Awaiting proof" : "Ready");
-
-			refreshState();
+			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Rolled " + roll + " (" + from + " → " + to + ")", null);
 		}
 		catch (Exception ex)
 		{
 			log.warn("Roll error", ex);
 			panel.setStatus("Roll error");
-			overlayModel.setStatusLine("Roll error");
+			panel.setCanRoll(false);
 		}
 	}
 
@@ -726,14 +449,19 @@ public class SnakesLaddersPlugin extends Plugin
 		String token = config.jwtToken();
 		if (token == null || token.trim().isEmpty())
 		{
-			panel.setStatus("Join a team first");
-			panel.setHasTeam(false);
+			panel.setStatus("No team token (join via web)");
 			return;
 		}
 
 		String baseUrl = config.apiBaseUrl();
 		String gameId = config.gameId();
 		String webhook = config.discordWebhookUrl();
+
+		if (gameId == null || gameId.trim().isEmpty())
+		{
+			panel.setStatus("Not connected");
+			return;
+		}
 
 		String proofUrl = JOptionPane.showInputDialog(panel, "Paste proof URL (https://...):");
 		if (proofUrl == null || proofUrl.trim().isEmpty()) return;
@@ -746,22 +474,21 @@ public class SnakesLaddersPlugin extends Plugin
 			if (root.has("finished") && root.get("finished").getAsBoolean())
 			{
 				String winner = root.has("winner") ? root.get("winner").getAsString() : "Unknown";
-				panel.setStatus("Finished - Winner: " + winner);
-				overlayModel.setStatusLine("Finished");
+				panel.setStatus("Ended - Winner: " + winner);
 			}
 			else
 			{
 				panel.setStatus("Proof submitted");
-				overlayModel.setStatusLine("Proof submitted");
 			}
 
-			refreshState();
+			// Next overlay poll should clear awaiting proof
+			panel.setAwaitingProof(false);
+			panel.setCanRoll(false);
 		}
 		catch (Exception ex)
 		{
 			log.warn("Proof error", ex);
 			panel.setStatus("Proof error");
-			overlayModel.setStatusLine("Proof error");
 		}
 	}
 
@@ -810,11 +537,11 @@ public class SnakesLaddersPlugin extends Plugin
 		static OverlaySnapshot fromJson(JsonObject root)
 		{
 			String phase = root.has("phase") ? root.get("phase").getAsString() : "running";
-
 			Instant start = parseInstant(root, "startTime");
 			Instant end = parseInstant(root, "endTime");
 
 			JsonObject tile = root.has("tile") && root.get("tile").isJsonObject() ? root.getAsJsonObject("tile") : null;
+
 			int tileIndex = tile != null && tile.has("tileIndex") ? tile.get("tileIndex").getAsInt() : 0;
 			String kind = tile != null && tile.has("kind") ? tile.get("kind").getAsString() : "";
 			String title = tile != null && tile.has("title") && !tile.get("title").isJsonNull() ? tile.get("title").getAsString() : "";
