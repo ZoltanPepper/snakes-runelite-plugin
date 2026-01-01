@@ -1,9 +1,15 @@
-.gradle
-build
+# Gradle
+.gradle/
+build/
+out/
+
+# IntelliJ / IDEs
 .idea/
-.project
-.settings/
-.classpath
-nbactions.xml
-nb-configuration.xml
-nbproject/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
