@@ -16,10 +16,8 @@ public class TileImageCache
 {
 	private static final HttpClient HTTP = HttpClient.newBuilder().build();
 
-	// Small fixed thread pool for image fetches (non-blocking for client thread)
 	private final ExecutorService pool = Executors.newFixedThreadPool(2);
 
-	// Simple LRU cache
 	private final Map<String, BufferedImage> lru = new LinkedHashMap<>(64, 0.75f, true)
 	{
 		@Override
@@ -45,7 +43,6 @@ public class TileImageCache
 		if (cacheKey == null || cacheKey.trim().isEmpty()) return;
 		if (imageUrl == null || imageUrl.trim().isEmpty()) return;
 
-		// If cached, return immediately
 		BufferedImage cached = getIfPresent(cacheKey);
 		if (cached != null)
 		{
@@ -74,7 +71,7 @@ public class TileImageCache
 			}
 			catch (Exception ignored)
 			{
-				// swallow
+				// ignore
 			}
 		});
 	}
