@@ -2,22 +2,24 @@ package com.snakesladders;
 
 import net.runelite.client.ui.overlay.infobox.InfoBox;
 
+import java.awt.Color;
 import java.awt.image.BufferedImage;
 
 /**
  * RuneLite-native InfoBox (buff/timer style).
- * Icon = tile image (later pulled from wiki/board).
+ * Icon = tile image (later we’ll swap from placeholder to real image).
  * Text = countdown (mm:ss or h:mm:ss).
- * Tooltip = status + tile title/description.
+ * Tooltip = tile title + description + status.
  */
 public class SnakesTileInfoBox extends InfoBox
 {
 	private volatile String text = "";
-	private volatile String status = "Snakes & Ladders";
 	private volatile String tooltip = "Snakes & Ladders";
 
 	public SnakesTileInfoBox(BufferedImage image)
 	{
+		// Pass null plugin because we aren't using plugin hub auto-grouping here
+		// (If you want strict grouping later, pass the plugin instance)
 		super(image, null);
 	}
 
@@ -25,6 +27,13 @@ public class SnakesTileInfoBox extends InfoBox
 	public String getText()
 	{
 		return text;
+	}
+
+	@Override
+	public Color getTextColor()
+	{
+		// RuneLite expects a color; white is consistent with timer/buff display.
+		return Color.WHITE;
 	}
 
 	@Override
@@ -38,23 +47,16 @@ public class SnakesTileInfoBox extends InfoBox
 		this.text = text == null ? "" : text;
 	}
 
-	public void setStatus(String status)
-	{
-		this.status = (status == null || status.trim().isEmpty()) ? "Snakes & Ladders" : status.trim();
-		// If caller hasn't set a multi-line tooltip, keep a sane default
-		this.tooltip = this.status;
-	}
-
 	public void setTooltipLines(String... lines)
 	{
 		if (lines == null || lines.length == 0)
 		{
-			this.tooltip = status;
+			this.tooltip = "Snakes & Ladders";
 			return;
 		}
 
 		StringBuilder sb = new StringBuilder();
-		sb.append(status);
+		boolean first = true;
 
 		for (String line : lines)
 		{
@@ -62,15 +64,11 @@ public class SnakesTileInfoBox extends InfoBox
 			String s = line.trim();
 			if (s.isEmpty()) continue;
 
-			sb.append("\n").append(s);
+			if (!first) sb.append("\n");
+			sb.append(s);
+			first = false;
 		}
 
-		this.tooltip = sb.toString();
-	}
-
-	public void setIcon(BufferedImage image)
-	{
-		if (image == null) return;
-		setImage(image);
+		this.tooltip = sb.length() == 0 ? "Snakes & Ladders" : sb.toString();
 	}
 }
