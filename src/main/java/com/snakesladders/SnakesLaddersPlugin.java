@@ -18,10 +18,13 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
+import net.runelite.client.util.LinkBrowser;
 
 import javax.inject.Inject;
 import javax.swing.JOptionPane;
 import java.awt.image.BufferedImage;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Timer;
@@ -44,21 +47,15 @@ public class SnakesLaddersPlugin extends Plugin
 	private SnakesLaddersPanel panel;
 	private NavigationButton navButton;
 
-	// Overlay polling + local tick for InfoBox
 	private Timer overlayPollTimer;
 	private Timer overlayTickTimer;
 
 	private String currentClanName = "Sixth Degree";
 	private String currentTeamName = "-";
 
-	// InfoBox + overlay polling state
 	private SnakesTileInfoBox tileInfoBox;
 	private String overlayEtag;
-	private OverlaySnapshot overlaySnapshot; // last parsed overlay
-
-	// Tile image cache + last key
-	private final TileImageCache imageCache = new TileImageCache();
-	private String lastImageKey;
+	private OverlaySnapshot overlaySnapshot;
 
 	@Override
 	protected void startUp()
@@ -73,18 +70,24 @@ public class SnakesLaddersPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navButton);
 
-		// Wire new panel buttons
+		// Buttons
+		panel.setupButton.addActionListener(e -> clientThread.invokeLater(this::openSetup));
+		panel.viewBoardButton.addActionListener(e -> clientThread.invokeLater(this::openBoard));
+
 		panel.connectButton.addActionListener(e -> clientThread.invokeLater(this::connect));
 		panel.disconnectButton.addActionListener(e -> clientThread.invokeLater(this::disconnect));
 		panel.actionButton.addActionListener(e -> clientThread.invokeLater(this::action));
 
 		updateHeader();
 
-		boolean connected = config.gameId() != null && !config.gameId().trim().isEmpty();
-		panel.setConnected(connected);
-		panel.setStatus(connected ? "Connected" : "Not connected");
+		boolean hasGameId = hasGameId();
+		panel.setHasGameId(hasGameId);
 
-		if (connected)
+		// "Connected" for UI purposes means "has a gameId configured"
+		panel.setConnected(hasGameId);
+		panel.setStatus(hasGameId ? "Connected" : "Not connected");
+
+		if (hasGameId)
 		{
 			ensureInfoBox();
 			startOverlayPolling();
@@ -96,7 +99,6 @@ public class SnakesLaddersPlugin extends Plugin
 	{
 		stopOverlayPolling();
 		removeInfoBox();
-		imageCache.shutdown();
 
 		if (navButton != null)
 		{
@@ -118,36 +120,91 @@ public class SnakesLaddersPlugin extends Plugin
 	private void updateHeader()
 	{
 		if (panel == null) return;
-
 		String rsn = client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "-";
 		panel.setHeader(currentClanName, currentTeamName, rsn);
 	}
 
-	/* -------------------- New flow: Connect / Disconnect / Action -------------------- */
+	private boolean hasGameId()
+	{
+		String gameId = config.gameId();
+		return gameId != null && !gameId.trim().isEmpty();
+	}
+
+	private String webBase()
+	{
+		String base = config.webBaseUrl();
+		if (base == null) return "";
+		base = base.trim();
+		while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+		return base;
+	}
+
+	private void openSetup()
+	{
+		String base = webBase();
+		if (base.isEmpty())
+		{
+			// If someone nuked config, don't crash the plugin—just no-op.
+			return;
+		}
+		String url = base + "/index.html";
+		LinkBrowser.browse(url);
+	}
+
+	private void openBoard()
+	{
+		// View board should require gameId; panel already disables if missing.
+		String gameId = config.gameId();
+		if (gameId == null || gameId.trim().isEmpty())
+		{
+			openSetup();
+			return;
+		}
+
+		String base = webBase();
+		if (base.isEmpty())
+		{
+			return;
+		}
+
+		String gid = gameId.trim();
+		String url = base + "/view.html?gameId=" + urlEncode(gid);
+		LinkBrowser.browse(url);
+	}
+
+	private static String urlEncode(String s)
+	{
+		try
+		{
+			return URLEncoder.encode(s, StandardCharsets.UTF_8.name());
+		}
+		catch (Exception ignored)
+		{
+			return s;
+		}
+	}
 
 	private void connect()
 	{
 		if (panel == null) return;
 
-		String gameId = JOptionPane.showInputDialog(panel, "Paste Game Code (game_xxx):", config.gameId());
+		String gameId = JOptionPane.showInputDialog(panel, "Paste Game ID (game_xxx):", config.gameId());
 		if (gameId == null || gameId.trim().isEmpty()) return;
 
-		configManager.setConfiguration("snakesladders", "gameId", gameId.trim());
+		String trimmed = gameId.trim();
+		configManager.setConfiguration("snakesladders", "gameId", trimmed);
 
+		panel.setHasGameId(true);
 		panel.setConnected(true);
 		panel.setStatus("Connected");
 		panel.setTile(0);
 		panel.setAwaitingProof(false);
 		panel.setCanRoll(false);
 
-		lastImageKey = null;
-		overlayEtag = null;
-		overlaySnapshot = null;
-
 		ensureInfoBox();
 		startOverlayPolling();
 
-		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Connected to " + gameId.trim(), null);
+		client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Snakes & Ladders: Connected to " + trimmed, null);
 	}
 
 	private void disconnect()
@@ -160,15 +217,12 @@ public class SnakesLaddersPlugin extends Plugin
 		currentTeamName = "-";
 		updateHeader();
 
+		panel.setHasGameId(false);
 		panel.setConnected(false);
 		panel.setStatus("Not connected");
 		panel.setTile(0);
 		panel.setAwaitingProof(false);
 		panel.setCanRoll(false);
-
-		lastImageKey = null;
-		overlayEtag = null;
-		overlaySnapshot = null;
 
 		stopOverlayPolling();
 		removeInfoBox();
@@ -188,17 +242,14 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 
-	/* -------------------- InfoBox lifecycle + overlay polling -------------------- */
-
 	private void ensureInfoBox()
 	{
 		if (tileInfoBox != null) return;
 
-		tileInfoBox = new SnakesTileInfoBox(new BufferedImage(32, 32, BufferedImage.TYPE_INT_ARGB));
+		tileInfoBox = new SnakesTileInfoBox(new BufferedImage(32, 32, BufferedImage.TYPE_INT_ARGB), null);
 		infoBoxManager.addInfoBox(tileInfoBox);
 
-		tileInfoBox.setStatus("Snakes & Ladders");
-		tileInfoBox.setTooltipLines("Connecting…");
+		tileInfoBox.setTooltipLines("Snakes & Ladders", "Connecting…");
 	}
 
 	private void removeInfoBox()
@@ -214,7 +265,9 @@ public class SnakesLaddersPlugin extends Plugin
 	{
 		stopOverlayPolling();
 
-		// Poll overlay endpoint every 5s
+		overlayEtag = null;
+		overlaySnapshot = null;
+
 		overlayPollTimer = new Timer("snakes-overlay-poll", true);
 		overlayPollTimer.scheduleAtFixedRate(new TimerTask()
 		{
@@ -230,12 +283,10 @@ public class SnakesLaddersPlugin extends Plugin
 					catch (Exception ex)
 					{
 						log.debug("Overlay poll error", ex);
-
 						if (tileInfoBox != null)
 						{
 							tileInfoBox.setText("");
-							tileInfoBox.setStatus("Overlay offline");
-							tileInfoBox.setTooltipLines("Overlay endpoint unreachable.");
+							tileInfoBox.setTooltipLines("Snakes & Ladders", "Overlay endpoint unreachable.");
 						}
 
 						if (panel != null)
@@ -248,7 +299,6 @@ public class SnakesLaddersPlugin extends Plugin
 			}
 		}, 0, 5_000);
 
-		// Local 1s tick for countdown
 		overlayTickTimer = new Timer("snakes-overlay-tick", true);
 		overlayTickTimer.scheduleAtFixedRate(new TimerTask()
 		{
@@ -259,7 +309,6 @@ public class SnakesLaddersPlugin extends Plugin
 				{
 					if (tileInfoBox == null) return;
 					if (overlaySnapshot == null) return;
-
 					tileInfoBox.setText(computeCountdownText(overlaySnapshot));
 				});
 			}
@@ -284,7 +333,23 @@ public class SnakesLaddersPlugin extends Plugin
 	{
 		String baseUrl = config.apiBaseUrl();
 		String gameId = config.gameId();
-		if (gameId == null || gameId.trim().isEmpty()) return;
+		if (gameId == null || gameId.trim().isEmpty())
+		{
+			if (panel != null)
+			{
+				panel.setHasGameId(false);
+				panel.setConnected(false);
+				panel.setStatus("Not connected");
+			}
+			return;
+		}
+
+		// Keep panel view button in-sync (gameId exists)
+		if (panel != null)
+		{
+			panel.setHasGameId(true);
+			panel.setConnected(true);
+		}
 
 		String rsn = client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "";
 		if (rsn == null) rsn = "";
@@ -298,47 +363,28 @@ public class SnakesLaddersPlugin extends Plugin
 			overlayEtag = res.etag.trim();
 		}
 
-		if (res.isNotModified())
-		{
-			return;
-		}
-
-		if (res.body == null || res.body.trim().isEmpty())
-		{
-			return;
-		}
+		if (res.isNotModified()) return;
+		if (res.body == null || res.body.trim().isEmpty()) return;
 
 		JsonObject root = gson.fromJson(res.body, JsonObject.class);
 		OverlaySnapshot snap = OverlaySnapshot.fromJson(root);
 		overlaySnapshot = snap;
 
-		// Update panel from overlay
 		if (panel != null)
 		{
-			panel.setConnected(true);
 			panel.setTile(snap.tileIndex);
 			panel.setAwaitingProof(snap.awaitingProof);
 
-			boolean canRoll;
-			if (snap.canRoll != null)
-			{
-				canRoll = snap.canRoll;
-			}
-			else
-			{
-				boolean hasJwt = config.jwtToken() != null && !config.jwtToken().trim().isEmpty();
-				canRoll = hasJwt && !snap.awaitingProof && "running".equalsIgnoreCase(snap.phase);
-			}
-
+			boolean hasJwt = config.jwtToken() != null && !config.jwtToken().trim().isEmpty();
+			boolean canRoll = hasJwt && !snap.awaitingProof && "running".equalsIgnoreCase(snap.phase);
 			panel.setCanRoll(canRoll);
+
 			panel.setStatus(statusFromPhase(snap.phase, snap.awaitingProof));
 		}
 
-		// Update InfoBox text + tooltip
 		if (tileInfoBox != null)
 		{
 			tileInfoBox.setText(computeCountdownText(snap));
-			tileInfoBox.setStatus(snap.awaitingProof ? "Awaiting proof" : "Snakes & Ladders");
 
 			if (snap.tileTitle != null && !snap.tileTitle.isEmpty())
 			{
@@ -351,43 +397,9 @@ public class SnakesLaddersPlugin extends Plugin
 			}
 			else
 			{
-				tileInfoBox.setTooltipLines("Waiting for tile…");
+				tileInfoBox.setTooltipLines("Snakes & Ladders", "Waiting for tile…");
 			}
-
-			// Tile icon fetch + cache
-			maybeUpdateTileIcon(snap);
 		}
-	}
-
-	private void maybeUpdateTileIcon(OverlaySnapshot snap)
-	{
-		if (snap == null) return;
-		if (snap.imageUrl == null || snap.imageUrl.trim().isEmpty()) return;
-
-		final String key = (snap.imageCacheKey != null && !snap.imageCacheKey.trim().isEmpty())
-			? snap.imageCacheKey.trim()
-			: ("tile:" + snap.tileIndex + ":" + snap.imageUrl.trim());
-
-		if (key.equals(lastImageKey)) return;
-		lastImageKey = key;
-
-		// If cached, set immediately
-		BufferedImage cached = imageCache.getIfPresent(key);
-		if (cached != null)
-		{
-			tileInfoBox.setIcon(cached);
-			return;
-		}
-
-		imageCache.fetchAsync(key, snap.imageUrl.trim(), img ->
-			clientThread.invokeLater(() ->
-			{
-				if (tileInfoBox != null)
-				{
-					tileInfoBox.setIcon(img);
-				}
-			})
-		);
 	}
 
 	private static String statusFromPhase(String phase, boolean awaitingProof)
@@ -435,8 +447,6 @@ public class SnakesLaddersPlugin extends Plugin
 		if (h > 0) return String.format("%d:%02d:%02d", h, m, s);
 		return String.format("%d:%02d", m, s);
 	}
-
-	/* -------------------- Roll + Proof (kept) -------------------- */
 
 	private void rollDice()
 	{
@@ -541,8 +551,6 @@ public class SnakesLaddersPlugin extends Plugin
 		return configManager.getConfig(SnakesLaddersConfig.class);
 	}
 
-	/* -------------------- Lightweight overlay snapshot parser -------------------- */
-
 	private static final class OverlaySnapshot
 	{
 		final String phase;
@@ -554,11 +562,7 @@ public class SnakesLaddersPlugin extends Plugin
 		final String tileTitle;
 		final String tileDescription;
 
-		final String imageUrl;
-		final String imageCacheKey;
-
 		final boolean awaitingProof;
-		final Boolean canRoll; // nullable: backend may not send yet
 
 		private OverlaySnapshot(
 			String phase,
@@ -568,10 +572,7 @@ public class SnakesLaddersPlugin extends Plugin
 			String tileKind,
 			String tileTitle,
 			String tileDescription,
-			String imageUrl,
-			String imageCacheKey,
-			boolean awaitingProof,
-			Boolean canRoll
+			boolean awaitingProof
 		)
 		{
 			this.phase = phase;
@@ -581,10 +582,7 @@ public class SnakesLaddersPlugin extends Plugin
 			this.tileKind = tileKind;
 			this.tileTitle = tileTitle;
 			this.tileDescription = tileDescription;
-			this.imageUrl = imageUrl;
-			this.imageCacheKey = imageCacheKey;
 			this.awaitingProof = awaitingProof;
-			this.canRoll = canRoll;
 		}
 
 		static OverlaySnapshot fromJson(JsonObject root)
@@ -600,20 +598,10 @@ public class SnakesLaddersPlugin extends Plugin
 			String title = tile != null && tile.has("title") && !tile.get("title").isJsonNull() ? tile.get("title").getAsString() : "";
 			String desc = tile != null && tile.has("description") && !tile.get("description").isJsonNull() ? tile.get("description").getAsString() : "";
 
-			String imageUrl = tile != null && tile.has("imageUrl") && !tile.get("imageUrl").isJsonNull() ? tile.get("imageUrl").getAsString() : "";
-			String imageKey = tile != null && tile.has("imageCacheKey") && !tile.get("imageCacheKey").isJsonNull() ? tile.get("imageCacheKey").getAsString() : "";
-
 			JsonObject flags = root.has("flags") && root.get("flags").isJsonObject() ? root.getAsJsonObject("flags") : null;
 			boolean awaiting = flags != null && flags.has("awaitingProof") && flags.get("awaitingProof").getAsBoolean();
 
-			Boolean canRoll = null;
-			if (flags != null && flags.has("canRoll") && !flags.get("canRoll").isJsonNull())
-			{
-				try { canRoll = flags.get("canRoll").getAsBoolean(); }
-				catch (Exception ignored) { canRoll = null; }
-			}
-
-			return new OverlaySnapshot(phase, start, end, tileIndex, kind, title, desc, imageUrl, imageKey, awaiting, canRoll);
+			return new OverlaySnapshot(phase, start, end, tileIndex, kind, title, desc, awaiting);
 		}
 
 		private static Instant parseInstant(JsonObject root, String field)
@@ -632,3 +620,4 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 }
+

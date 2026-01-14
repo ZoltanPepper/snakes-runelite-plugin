@@ -2,9 +2,11 @@ package com.snakesladders;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 
 public class SnakesApi
 {
@@ -56,6 +58,34 @@ public class SnakesApi
 		return res.headers().firstValue(name).orElse(null);
 	}
 
+	/** Encode a value for query string usage (e.g. rsn, join code, etc). */
+	private static String encQ(String s)
+	{
+		if (s == null) return "";
+		return URLEncoder.encode(s.trim(), StandardCharsets.UTF_8);
+	}
+
+	/**
+	 * Encode a value used in a URL path segment (e.g. /games/{id}/...).
+	 * We keep it conservative: encode anything that could break path parsing.
+	 */
+	private static String encPath(String s)
+	{
+		if (s == null) return "";
+		// URLEncoder is for query strings. For path segments, do a safe minimal encoding.
+		// This covers spaces and any reserved path breakers.
+		String t = s.trim();
+		return t
+			.replace("%", "%25")
+			.replace(" ", "%20")
+			.replace("#", "%23")
+			.replace("?", "%3F")
+			.replace("&", "%26")
+			.replace("/", "%2F")
+			.replace("\\", "%5C")
+			.replace(":", "%3A");
+	}
+
 	/**
 	 * Lightweight poll endpoint for the RuneLite InfoBox overlay.
 	 *
@@ -64,13 +94,14 @@ public class SnakesApi
 	 * - If-None-Match request header
 	 * - 304 Not Modified when unchanged
 	 *
-	 * If you haven't added the backend endpoint yet, you'll add:
 	 * GET /games/:id/overlay?rsn=...
 	 */
 	public static ApiResult getOverlay(String baseUrl, String gameId, String rsn, String ifNoneMatchEtag)
 		throws IOException, InterruptedException
 	{
-		String url = normalizeBaseUrl(baseUrl) + "/games/" + gameId + "/overlay?rsn=" + urlEncodeQuery(rsn);
+		String url = normalizeBaseUrl(baseUrl)
+			+ "/games/" + encPath(gameId)
+			+ "/overlay?rsn=" + encQ(rsn);
 
 		HttpRequest.Builder b = HttpRequest.newBuilder()
 			.uri(URI.create(url))
@@ -100,7 +131,7 @@ public class SnakesApi
 
 	public static String getGameState(String baseUrl, String gameId) throws IOException, InterruptedException
 	{
-		String url = normalizeBaseUrl(baseUrl) + "/games/" + gameId + "/state";
+		String url = normalizeBaseUrl(baseUrl) + "/games/" + encPath(gameId) + "/state";
 		HttpRequest req = HttpRequest.newBuilder()
 			.uri(URI.create(url))
 			.GET()
@@ -112,6 +143,10 @@ public class SnakesApi
 		return res.body();
 	}
 
+	/**
+	 * NOTE: Plugin no longer needs to create games (website does it),
+	 * but leaving it here is harmless.
+	 */
 	public static String createGame(String baseUrl, String webhookUrl, String clanName, String hostPassword, int boardSize, String boardUrl)
 		throws IOException, InterruptedException
 	{
@@ -139,7 +174,7 @@ public class SnakesApi
 	public static String register(String baseUrl, String gameId, String webhookUrl, String teamName, String teamPassword, String rsn)
 		throws IOException, InterruptedException
 	{
-		String url = normalizeBaseUrl(baseUrl) + "/games/" + gameId + "/register";
+		String url = normalizeBaseUrl(baseUrl) + "/games/" + encPath(gameId) + "/register";
 
 		String body = "{\"teamName\":\"" + escape(teamName) + "\"," +
 			"\"teamPassword\":\"" + escape(teamPassword) + "\"," +
@@ -160,7 +195,7 @@ public class SnakesApi
 
 	public static String roll(String baseUrl, String gameId, String webhookUrl, String jwtToken) throws IOException, InterruptedException
 	{
-		String url = normalizeBaseUrl(baseUrl) + "/games/" + gameId + "/roll";
+		String url = normalizeBaseUrl(baseUrl) + "/games/" + encPath(gameId) + "/roll";
 
 		HttpRequest.Builder b = HttpRequest.newBuilder()
 			.uri(URI.create(url))
@@ -179,7 +214,7 @@ public class SnakesApi
 	public static String submitProof(String baseUrl, String gameId, String webhookUrl, String jwtToken, String urlToProof)
 		throws IOException, InterruptedException
 	{
-		String url = normalizeBaseUrl(baseUrl) + "/games/" + gameId + "/proof";
+		String url = normalizeBaseUrl(baseUrl) + "/games/" + encPath(gameId) + "/proof";
 
 		String body = "{\"url\":\"" + escape(urlToProof) + "\"}";
 
@@ -201,20 +236,5 @@ public class SnakesApi
 	{
 		if (s == null) return "";
 		return s.replace("\\", "\\\\").replace("\"", "\\\"");
-	}
-
-	// Minimal query encoder for rsn in ?rsn=...
-	// RSNs are simple, but this avoids spaces breaking the URL.
-	private static String urlEncodeQuery(String s)
-	{
-		if (s == null) return "";
-		// Basic encoding: space -> %20, plus the common offenders
-		// If you want full encoding, we can swap to URLEncoder with UTF-8.
-		return s.trim()
-			.replace("%", "%25")
-			.replace(" ", "%20")
-			.replace("#", "%23")
-			.replace("?", "%3F")
-			.replace("&", "%26");
 	}
 }

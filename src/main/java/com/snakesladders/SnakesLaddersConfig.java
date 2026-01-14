@@ -18,6 +18,16 @@ public interface SnakesLaddersConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "webBaseUrl",
+		name = "Web UI Base URL",
+		description = "Board website base URL, e.g. https://zoltanpepper.github.io/snakes-board-6degree"
+	)
+	default String webBaseUrl()
+	{
+		return "https://zoltanpepper.github.io/snakes-board-6degree";
+	}
+
+	@ConfigItem(
 		keyName = "discordWebhookUrl",
 		name = "Discord Webhook URL",
 		description = "Webhook used for posting rolls/proofs (sent to backend on requests).",
@@ -41,7 +51,7 @@ public interface SnakesLaddersConfig extends Config
 	@ConfigItem(
 		keyName = "jwtToken",
 		name = "JWT Token",
-		description = "Stored after joining a team",
+		description = "Stored after joining a team via web",
 		secret = true
 	)
 	default String jwtToken()

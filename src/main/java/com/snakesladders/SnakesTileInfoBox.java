@@ -1,74 +1,78 @@
 package com.snakesladders;
 
+import net.runelite.client.plugins.Plugin;
 import net.runelite.client.ui.overlay.infobox.InfoBox;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 
-/**
- * RuneLite-native InfoBox (buff/timer style).
- * Icon = tile image (later we’ll swap from placeholder to real image).
- * Text = countdown (mm:ss or h:mm:ss).
- * Tooltip = tile title + description + status.
- */
 public class SnakesTileInfoBox extends InfoBox
 {
-	private volatile String text = "";
-	private volatile String tooltip = "Snakes & Ladders";
+    private volatile String text = "";
+    private volatile String tooltip = "Snakes & Ladders";
+    private volatile String status = "Snakes & Ladders";
 
-	public SnakesTileInfoBox(BufferedImage image)
-	{
-		// Pass null plugin because we aren't using plugin hub auto-grouping here
-		// (If you want strict grouping later, pass the plugin instance)
-		super(image, null);
-	}
+    public SnakesTileInfoBox(BufferedImage image, Plugin plugin)
+    {
+        super(image, plugin); // ✅ MUST NOT be null
+    }
 
-	@Override
-	public String getText()
-	{
-		return text;
-	}
+    @Override
+    public String getText()
+    {
+        return text;
+    }
 
-	@Override
-	public Color getTextColor()
-	{
-		// RuneLite expects a color; white is consistent with timer/buff display.
-		return Color.WHITE;
-	}
+    @Override
+    public Color getTextColor()
+    {
+        return Color.WHITE;
+    }
 
-	@Override
-	public String getTooltip()
-	{
-		return tooltip;
-	}
+    @Override
+    public String getTooltip()
+    {
+        return tooltip;
+    }
 
-	public void setText(String text)
-	{
-		this.text = text == null ? "" : text;
-	}
+    public void setText(String text)
+    {
+        this.text = text == null ? "" : text;
+    }
 
-	public void setTooltipLines(String... lines)
-	{
-		if (lines == null || lines.length == 0)
-		{
-			this.tooltip = "Snakes & Ladders";
-			return;
-		}
+    public void setStatus(String status)
+    {
+        this.status = status == null ? "" : status;
+    }
 
-		StringBuilder sb = new StringBuilder();
-		boolean first = true;
+    public void setIcon(BufferedImage image)
+    {
+        if (image == null) return;
+        setImage(image);
+    }
 
-		for (String line : lines)
-		{
-			if (line == null) continue;
-			String s = line.trim();
-			if (s.isEmpty()) continue;
+    public void setTooltipLines(String... lines)
+    {
+        StringBuilder sb = new StringBuilder();
 
-			if (!first) sb.append("\n");
-			sb.append(s);
-			first = false;
-		}
+        if (status != null && !status.trim().isEmpty())
+        {
+            sb.append(status.trim());
+        }
 
-		this.tooltip = sb.length() == 0 ? "Snakes & Ladders" : sb.toString();
-	}
+        if (lines != null)
+        {
+            for (String line : lines)
+            {
+                if (line == null) continue;
+                String s = line.trim();
+                if (s.isEmpty()) continue;
+
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(s);
+            }
+        }
+
+        this.tooltip = sb.length() == 0 ? "Snakes & Ladders" : sb.toString();
+    }
 }
