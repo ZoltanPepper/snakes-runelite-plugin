@@ -23,6 +23,9 @@ import net.runelite.client.util.LinkBrowser;
 import javax.inject.Inject;
 import javax.swing.JOptionPane;
 import java.awt.image.BufferedImage;
+import java.awt.BasicStroke;
+import java.awt.Color;
+import java.awt.Graphics2D;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -62,7 +65,7 @@ public class SnakesLaddersPlugin extends Plugin
 	{
 		panel = new SnakesLaddersPanel();
 
-		BufferedImage icon = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+		BufferedImage icon = buildNavIcon();
 		navButton = NavigationButton.builder()
 			.tooltip("Snakes & Ladders")
 			.icon(icon)
@@ -153,7 +156,6 @@ public class SnakesLaddersPlugin extends Plugin
 
 	private void openBoard()
 	{
-		// View board should require gameId; panel already disables if missing.
 		String gameId = config.gameId();
 		if (gameId == null || gameId.trim().isEmpty())
 		{
@@ -182,6 +184,38 @@ public class SnakesLaddersPlugin extends Plugin
 		{
 			return s;
 		}
+	}
+
+	private static BufferedImage buildNavIcon()
+	{
+		BufferedImage icon = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = icon.createGraphics();
+		g.setColor(new Color(240, 240, 240));
+		g.fillRoundRect(2, 2, 12, 12, 3, 3);
+		g.setColor(new Color(60, 60, 60));
+		g.setStroke(new BasicStroke(1f));
+		g.drawRoundRect(2, 2, 12, 12, 3, 3);
+
+		g.setColor(new Color(20, 20, 20));
+		g.fillOval(4, 4, 2, 2);
+		g.fillOval(10, 4, 2, 2);
+		g.fillOval(7, 7, 2, 2);
+		g.fillOval(4, 10, 2, 2);
+		g.fillOval(10, 10, 2, 2);
+
+		int[][] snake = {
+			{4, 11}, {5, 10}, {6, 9}, {7, 8}, {8, 7}, {9, 6}, {10, 5}, {11, 4}
+		};
+		for (int i = 0; i < snake.length; i++)
+		{
+			g.setColor(i % 2 == 0 ? new Color(0, 120, 0) : new Color(0, 180, 0));
+			g.fillRect(snake[i][0], snake[i][1], 1, 1);
+		}
+		g.setColor(new Color(0, 180, 0));
+		g.fillRect(11, 4, 2, 1);
+		g.fillRect(12, 5, 1, 1);
+		g.dispose();
+		return icon;
 	}
 
 	private void connect()
@@ -620,4 +654,3 @@ public class SnakesLaddersPlugin extends Plugin
 		}
 	}
 }
-

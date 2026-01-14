@@ -101,8 +101,8 @@ public class SnakesLaddersPanel extends PluginPanel
 		// setup is always enabled
 		setupButton.setEnabled(true);
 
-		// viewBoard enabled only if we have a gameId
-		viewBoardButton.setEnabled(hasGameId);
+		// viewBoard always enabled (opens index if no gameId)
+		viewBoardButton.setEnabled(true);
 	}
 
 	private void refreshActionLabel()
